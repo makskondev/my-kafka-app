@@ -1,0 +1,120 @@
+using Confluent.Kafka;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using MyApp.Contracts.Outbound;
+using MyApp.Data;
+using Oracle.ManagedDataAccess.Client;
+
+namespace MyApp.Core.Outbound;
+
+/// <summary>
+/// Единый generic-воркер на ВСЕ outbound-события. Новый экземпляр создаётся
+/// на каждый Code при регистрации (см. AddOutboundEvents) - разработчик источника
+/// этот класс не пишет и не видит.
+/// </summary>
+public sealed class OutboundPollingWorker(
+    OutboundEventRegistration registration,
+    IServiceScopeFactory scopeFactory,
+    IProducer<string, string> producer,
+    OracleConnectionFactory connectionFactory,
+    ILogger<OutboundPollingWorker> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(registration.PollingIntervalSeconds));
+
+        logger.LogInformation("Outbound worker started. Code={Code}, View={View}, Topic={Topic}",
+            registration.Code, registration.SourceView, registration.TargetTopic);
+
+        while (await timer.WaitForNextTickAsync(stoppingToken))
+        {
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var source = scope.ServiceProvider
+                    .GetRequiredKeyedService<IOutboundEventSourceBase>(registration.Code);
+
+                var items = await source.FetchPendingRawAsync(stoppingToken);
+                if (items.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (var item in items)
+                {
+                    await ProcessItemAsync(source, item, stoppingToken);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Outbound polling cycle failed. Code={Code}", registration.Code);
+            }
+        }
+    }
+
+    private async Task ProcessItemAsync(IOutboundEventSourceBase source, RawOutboundItem item, CancellationToken ct)
+    {
+        var result = await TryProduceAsync(source, item, ct);
+
+        var (procedureName, parameters) = result switch
+        {
+            ProcessingResult.Success s => (registration.SuccessProcedure, s.Parameters),
+            ProcessingResult.Failure f => (registration.ErrorProcedure, f.Parameters),
+            _ => throw new InvalidOperationException("Unreachable ProcessingResult case."),
+        };
+
+        try
+        {
+            await CallProcedureAsync(procedureName, parameters, ct);
+        }
+        catch (Exception ackEx)
+        {
+            // строка останется во view и переобработается на следующем poll (at-least-once)
+            logger.LogError(ackEx, "Failed to call {Procedure}. Code={Code}, Key={Key}",
+                procedureName, registration.Code, item.IdempotencyKey);
+        }
+    }
+
+    private async Task<ProcessingResult> TryProduceAsync(
+        IOutboundEventSourceBase source, RawOutboundItem item, CancellationToken ct)
+    {
+        try
+        {
+            var delivery = await producer.ProduceAsync(registration.TargetTopic,
+                new Message<string, string> { Key = item.IdempotencyKey, Value = item.PayloadJson },
+                ct);
+
+            if (delivery.Status != PersistenceStatus.Persisted)
+            {
+                var error = new ProcessingError($"Kafka persistence status: {delivery.Status}");
+                return new ProcessingResult.Failure(source.GetErrorParameters(item.IdempotencyKey, error));
+            }
+
+            return new ProcessingResult.Success(source.GetSuccessParameters(item.IdempotencyKey));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Produce threw. Code={Code}, Key={Key}", registration.Code, item.IdempotencyKey);
+            var error = new ProcessingError("Produce threw an exception", ex);
+            return new ProcessingResult.Failure(source.GetErrorParameters(item.IdempotencyKey, error));
+        }
+    }
+
+    private async Task CallProcedureAsync(
+        string procedureName, IReadOnlyList<OracleProcedureParameter> parameters, CancellationToken ct)
+    {
+        await using var connection = await connectionFactory.OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+
+        var paramNames = string.Join(", ", parameters.Select(p => $":{p.Name}"));
+        command.CommandText = $"BEGIN {procedureName}({paramNames}); END;";
+
+        foreach (var p in parameters)
+        {
+            command.Parameters.Add(new OracleParameter(p.Name, p.DbType) { Value = p.Value ?? DBNull.Value });
+        }
+
+        await command.ExecuteNonQueryAsync(ct);
+    }
+}

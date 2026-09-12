@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>MyApp.Host</RootNamespace>
+    <UserSecretsId>myapp-host-secrets</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Confluent.Kafka" Version="2.6.1" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MyApp.Contracts\MyApp.Contracts.csproj" />
+    <ProjectReference Include="..\MyApp.Core\MyApp.Core.csproj" />
+    <ProjectReference Include="..\MyApp.Data\MyApp.Data.csproj" />
+    <ProjectReference Include="..\MyApp.Handlers\MyApp.Handlers.csproj" />
+    <ProjectReference Include="..\MyApp.OutboundSources\MyApp.OutboundSources.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="appsettings.Development.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

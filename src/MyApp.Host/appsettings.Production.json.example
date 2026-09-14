@@ -1,0 +1,15 @@
+{
+  "_comment": "Это ПРИМЕР структуры для окружения с SASL_SSL. Не хранить реальные пароли/пути здесь - см. раздел 'Безопасность Kafka' в README. SaslPassword переопределяется переменной окружения Kafka__Security__SaslPassword (в Kubernetes - через Vault/Secret, прокинутый в env пода).",
+
+  "Kafka": {
+    "BootstrapServers": "kafka-broker-1:9093,kafka-broker-2:9093,kafka-broker-3:9093",
+    "Security": {
+      "SecurityProtocol": "SaslSsl",
+      "SaslMechanism": "ScramSha512",
+      "SaslUsername": "myapp-service",
+      "SaslPassword": "__SET_VIA_ENV_OR_SECRET_STORE__",
+      "SslCaLocation": "/etc/myapp/certs/ca.pem",
+      "EnableSslCertificateVerification": true
+    }
+  }
+}

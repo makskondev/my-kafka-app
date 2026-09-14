@@ -15,8 +15,8 @@ src/
 ## Запуск
 
 1. Установить .NET 8 SDK.
-2. Поднять/указать Kafka и Oracle в `src/MyApp.Host/appsettings.json` (или через
-   `dotnet user-secrets` / переменные окружения для продакшн-креденшлов).
+2. Поднять/указать Kafka и Oracle в `src/MyApp.Host/appsettings.json` (для
+   прод-креденшлов — переменные окружения, см. раздел "Безопасность Kafka" ниже).
 3. Из корня решения:
 
 ```bash
@@ -69,6 +69,58 @@ dotnet run --project src/MyApp.Host
 DLQ не используется — ошибка просто не подтверждается, элемент переигрывается
 на следующей итерации.
 
+## Безопасность Kafka (SASL_SSL)
+
+Настройки безопасности (`Kafka:Security` в конфиге) применяются **одним и тем
+же кодом** (`KafkaSecurityConfigurator.ApplySecurity`) и к продюсеру, и ко всем
+consumer-воркерам — гарантированно не могут разойтись между ними, потому что
+`ConsumerConfig` и `ProducerConfig` оба наследуются от `ClientConfig`, на
+котором и объявлено расширение.
+
+```jsonc
+"Kafka": {
+  "BootstrapServers": "kafka-broker-1:9093,kafka-broker-2:9093",
+  "Security": {
+    "SecurityProtocol": "SaslSsl",
+    "SaslMechanism": "ScramSha512",
+    "SaslUsername": "myapp-service",
+    "SaslPassword": "...",
+    "SslCaLocation": "/etc/myapp/certs/ca.pem",
+    "EnableSslCertificateVerification": true
+  }
+}
+```
+
+Если секцию `Security` не указывать (как в базовом `appsettings.json`) —
+подключение идёт без аутентификации/шифрования, что подходит для локального
+dev-брокера. Полный пример боевого конфига — в
+`src/MyApp.Host/appsettings.Production.json.example` (расширение `.example`,
+чтобы ASP.NET Core не подхватывал файл автоматически как реальный конфиг).
+
+**Пароль (`SaslPassword`) и пароль от ключа (`SslKeyPassword`) никогда не
+хранятся в `appsettings.*.json` в git.** Оставляйте их пустыми/отсутствующими
+в файлах конфигурации и переопределяйте через переменные окружения — Generic
+Host (`Host.CreateApplicationBuilder`) уже по умолчанию подключает провайдер
+переменных окружения, дополнительно ничего включать не нужно:
+
+```bash
+# двойное подчёркивание = разделитель уровней секции конфига
+export Kafka__Security__SaslPassword="..."
+```
+
+При деплое в Kubernetes это обычно означает: значение лежит в Vault, попадает
+в Secret (напрямую или через Vault Agent/External Secrets Operator), и
+секция `env`/`envFrom` в манифесте пода прокидывает его в переменную
+`Kafka__Security__SaslPassword` — приложение получит его без каких-либо
+изменений в коде.
+
+При mTLS (клиентский сертификат) дополнительно заполните `SslCertificateLocation`
+и `SslKeyLocation` (пути к PEM-файлам, смонтированным в контейнер/под).
+
+Некорректное значение `SecurityProtocol`/`SaslMechanism` в конфиге валится на
+старте хоста с понятной ошибкой (`Kafka:Security:SecurityProtocol - unknown
+value '...'`), а не где-то в середине работы при первой попытке подключения.
+
 ## Тесты
 
 `tests/MyApp.Tests` — юнит-тесты на xUnit + Moq. Покрывают:
@@ -84,6 +136,9 @@ DLQ не используется — ошибка просто не подтв�
 - `OutboundPollingWorker.ProcessItemAsync` — вызов Success/Error-процедуры в
   зависимости от результата `Produce` (успех / `NotPersisted` / исключение),
   и то, что сбой самого вызова процедуры не приводит к падению воркера.
+- `KafkaSecurityConfigurator.ApplySecurity` — корректное применение SASL_SSL-
+  настроек и на `ConsumerConfig`, и на `ProducerConfig`; fail-fast при неверном
+  `SecurityProtocol`/`SaslMechanism`.
 
 Запуск:
 

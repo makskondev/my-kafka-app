@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MyApp.Core.Configuration;
 using MyApp.Core.Inbound;
+using MyApp.Core.Kafka;
 using MyApp.Core.Outbound;
 using MyApp.Data;
 
@@ -29,12 +30,15 @@ builder.Services.AddSingleton(new JsonSerializerOptions
 builder.Services.AddSingleton<IProducer<string, string>>(sp =>
 {
     var kafkaOptions = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
-    return new ProducerBuilder<string, string>(new ProducerConfig
+    var producerConfig = new ProducerConfig
     {
         BootstrapServers = kafkaOptions.BootstrapServers,
         EnableIdempotence = true,
         Acks = Acks.All,
-    }).Build();
+    };
+    producerConfig.ApplySecurity(kafkaOptions.Security); // тот же security-конфиг, что и у консьюмеров
+
+    return new ProducerBuilder<string, string>(producerConfig).Build();
 });
 
 // --- Регистрация событий из конфига ---

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MyApp.Contracts.Inbound;
 using MyApp.Core.Configuration;
+using MyApp.Core.Kafka;
 
 namespace MyApp.Core.Inbound;
 
@@ -34,6 +35,7 @@ public sealed class InboundConsumerWorker(
             EnableAutoCommit = false, // коммитим только после успешной записи в Oracle
             AutoOffsetReset = AutoOffsetReset.Earliest,
         };
+        config.ApplySecurity(kafkaOptions.Value.Security);
 
         using var consumer = consumerFactory.Create(config);
         consumer.Subscribe(registration.SourceQueue);

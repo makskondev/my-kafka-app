@@ -17,6 +17,7 @@ public sealed class InboundConsumerWorker(
     InboundEventRegistration registration,
     IServiceScopeFactory scopeFactory,
     IOptions<KafkaOptions> kafkaOptions,
+    IKafkaConsumerFactory consumerFactory,
     ILogger<InboundConsumerWorker> logger) : BackgroundService
 {
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -34,7 +35,7 @@ public sealed class InboundConsumerWorker(
             AutoOffsetReset = AutoOffsetReset.Earliest,
         };
 
-        using var consumer = new ConsumerBuilder<string, string>(config).Build();
+        using var consumer = consumerFactory.Create(config);
         consumer.Subscribe(registration.SourceQueue);
 
         logger.LogInformation("Inbound worker started. Code={Code}, Queue={Queue}, Group={Group}",
@@ -51,14 +52,7 @@ public sealed class InboundConsumerWorker(
                     continue;
                 }
 
-                using var scope = scopeFactory.CreateScope();
-                var handler = scope.ServiceProvider
-                    .GetRequiredKeyedService<IInboundEventHandlerBase>(registration.Code);
-
-                var context = new InboundEventContext(registration.Code, result.Topic, result.Message.Key);
-                await handler.HandleAsync(result.Message.Value, context, stoppingToken);
-
-                consumer.Commit(result); // обработчик идемпотентен -> повторная доставка безопасна
+                await ProcessMessageAsync(consumer, result, stoppingToken);
             }
             catch (OperationCanceledException)
             {
@@ -83,5 +77,23 @@ public sealed class InboundConsumerWorker(
 
         consumer.Close();
         logger.LogInformation("Inbound worker stopped. Code={Code}", registration.Code);
+    }
+
+    /// <summary>
+    /// Обработка одного сообщения: резолвит обработчик по Code, вызывает его и коммитит offset
+    /// только при успехе. Исключение НЕ перехватывается здесь намеренно - его перехватывает
+    /// и логирует RunLoop, чтобы offset не закоммитился. Выделено в internal метод для юнит-тестов.
+    /// </summary>
+    internal async Task ProcessMessageAsync(
+        IConsumer<string, string> consumer, ConsumeResult<string, string> result, CancellationToken ct)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var handler = scope.ServiceProvider
+            .GetRequiredKeyedService<IInboundEventHandlerBase>(registration.Code);
+
+        var context = new InboundEventContext(registration.Code, result.Topic, result.Message.Key);
+        await handler.HandleAsync(result.Message.Value, context, ct);
+
+        consumer.Commit(result); // обработчик идемпотентен -> повторная доставка безопасна
     }
 }

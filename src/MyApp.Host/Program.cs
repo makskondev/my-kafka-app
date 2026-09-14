@@ -18,6 +18,8 @@ builder.Services.Configure<OracleOptions>(builder.Configuration.GetSection("Orac
 
 // --- Общая инфраструктура ---
 builder.Services.AddSingleton<OracleConnectionFactory>();
+builder.Services.AddSingleton<IOracleProcedureInvoker, OracleProcedureInvoker>();
+builder.Services.AddSingleton<IKafkaConsumerFactory, KafkaConsumerFactory>();
 
 builder.Services.AddSingleton(new JsonSerializerOptions
 {

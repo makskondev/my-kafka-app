@@ -4,7 +4,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MyApp.Contracts.Outbound;
 using MyApp.Data;
-using Oracle.ManagedDataAccess.Client;
 
 namespace MyApp.Core.Outbound;
 
@@ -17,7 +16,7 @@ public sealed class OutboundPollingWorker(
     OutboundEventRegistration registration,
     IServiceScopeFactory scopeFactory,
     IProducer<string, string> producer,
-    OracleConnectionFactory connectionFactory,
+    IOracleProcedureInvoker procedureInvoker,
     ILogger<OutboundPollingWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -31,20 +30,7 @@ public sealed class OutboundPollingWorker(
         {
             try
             {
-                using var scope = scopeFactory.CreateScope();
-                var source = scope.ServiceProvider
-                    .GetRequiredKeyedService<IOutboundEventSourceBase>(registration.Code);
-
-                var items = await source.FetchPendingRawAsync(stoppingToken);
-                if (items.Count == 0)
-                {
-                    continue;
-                }
-
-                foreach (var item in items)
-                {
-                    await ProcessItemAsync(source, item, stoppingToken);
-                }
+                await PollOnceAsync(stoppingToken);
             }
             catch (Exception ex)
             {
@@ -53,7 +39,29 @@ public sealed class OutboundPollingWorker(
         }
     }
 
-    private async Task ProcessItemAsync(IOutboundEventSourceBase source, RawOutboundItem item, CancellationToken ct)
+    /// <summary>
+    /// Один цикл поллинга: читает "новое" из источника и обрабатывает каждый элемент.
+    /// Выделено в internal метод, чтобы юнит-тесты могли запускать один цикл без PeriodicTimer.
+    /// </summary>
+    internal async Task PollOnceAsync(CancellationToken ct)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var source = scope.ServiceProvider
+            .GetRequiredKeyedService<IOutboundEventSourceBase>(registration.Code);
+
+        var items = await source.FetchPendingRawAsync(ct);
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var item in items)
+        {
+            await ProcessItemAsync(source, item, ct);
+        }
+    }
+
+    internal async Task ProcessItemAsync(IOutboundEventSourceBase source, RawOutboundItem item, CancellationToken ct)
     {
         var result = await TryProduceAsync(source, item, ct);
 
@@ -66,7 +74,7 @@ public sealed class OutboundPollingWorker(
 
         try
         {
-            await CallProcedureAsync(procedureName, parameters, ct);
+            await procedureInvoker.InvokeAsync(procedureName, parameters, ct);
         }
         catch (Exception ackEx)
         {
@@ -99,22 +107,5 @@ public sealed class OutboundPollingWorker(
             var error = new ProcessingError("Produce threw an exception", ex);
             return new ProcessingResult.Failure(source.GetErrorParameters(item.IdempotencyKey, error));
         }
-    }
-
-    private async Task CallProcedureAsync(
-        string procedureName, IReadOnlyList<OracleProcedureParameter> parameters, CancellationToken ct)
-    {
-        await using var connection = await connectionFactory.OpenAsync(ct);
-        await using var command = connection.CreateCommand();
-
-        var paramNames = string.Join(", ", parameters.Select(p => $":{p.Name}"));
-        command.CommandText = $"BEGIN {procedureName}({paramNames}); END;";
-
-        foreach (var p in parameters)
-        {
-            command.Parameters.Add(new OracleParameter(p.Name, p.DbType) { Value = p.Value ?? DBNull.Value });
-        }
-
-        await command.ExecuteNonQueryAsync(ct);
     }
 }

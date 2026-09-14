@@ -68,3 +68,45 @@ dotnet run --project src/MyApp.Host
 
 DLQ не используется — ошибка просто не подтверждается, элемент переигрывается
 на следующей итерации.
+
+## Тесты
+
+`tests/MyApp.Tests` — юнит-тесты на xUnit + Moq. Покрывают:
+
+- `InboundHandlerAdapter` — десериализация JSON, делегирование в обработчик,
+  распространение исключений.
+- `AddInboundEvents` / `AddOutboundEvents` — fail-fast при отсутствующем/неверном
+  типе в конфиге, корректный wiring через keyed DI.
+- `InboundConsumerWorker.ProcessMessageAsync` — commit offset только при успехе,
+  отсутствие commit при исключении обработчика.
+- `OutboundSourceAdapter` — кеширование выборки по `IdempotencyKey`, очистка кеша
+  на новом цикле.
+- `OutboundPollingWorker.ProcessItemAsync` — вызов Success/Error-процедуры в
+  зависимости от результата `Produce` (успех / `NotPersisted` / исключение),
+  и то, что сбой самого вызова процедуры не приводит к падению воркера.
+
+Запуск:
+
+```bash
+dotnet test MyApp.sln
+```
+
+**Важно:** для тестируемости в `MyApp.Core`/`MyApp.Data` выделены две абстракции,
+которых нет в "боевом" пути напрямую:
+
+- `IKafkaConsumerFactory` — создание `IConsumer<string,string>` (реальная
+  реализация — `KafkaConsumerFactory`), позволяет подставлять фейковый consumer
+  в тестах вместо реального подключения к брокеру.
+- `IOracleProcedureInvoker` — вызов Oracle-процедуры с параметрами (реальная
+  реализация — `OracleProcedureInvoker` в `MyApp.Data`), позволяет не поднимать
+  реальную БД в юнит-тестах.
+
+Обе регистрируются в `Program.cs` как singleton и не меняют поведение в проде —
+это чистое разделение ответственности для инверсии зависимостей.
+
+Тесты, требующие реального Oracle (например, `MERGE`-логику в
+`OrderCreatedHandler` или SQL в `InvoiceReadySource`), рекомендуется писать как
+**интеграционные**, а не юнит-тесты — например, через Testcontainers с образом
+Oracle XE, отдельным проектом `MyApp.IntegrationTests`. Юнит-тесты на них не
+имеют смысла без реальной СУБД: единственная логика, которую стоит проверять
+изолированно, уже вынесена в `IOracleProcedureInvoker`.

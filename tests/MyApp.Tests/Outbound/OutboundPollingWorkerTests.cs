@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using MyApp.Contracts.Outbound;
+using MyApp.Core.Health;
 using MyApp.Core.Outbound;
 using MyApp.Data;
 using Oracle.ManagedDataAccess.Client;
@@ -24,7 +25,7 @@ public class OutboundPollingWorkerTests
         IServiceScopeFactory scopeFactory,
         IProducer<string, string> producer,
         IOracleProcedureInvoker invoker)
-        => new(registration, scopeFactory, producer, invoker, NullLogger<OutboundPollingWorker>.Instance);
+        => new(registration, new WorkerHealthState(), scopeFactory, producer, invoker, NullLogger<OutboundPollingWorker>.Instance);
 
     private static OutboundEventRegistration DefaultRegistration() =>
         new("InvoiceReady", "V_PENDING_INVOICES", "invoices.ready.v1", "PKG.SUCCESS", "PKG.ERROR", 15);

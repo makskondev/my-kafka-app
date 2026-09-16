@@ -121,6 +121,65 @@ export Kafka__Security__SaslPassword="..."
 старте хоста с понятной ошибкой (`Kafka:Security:SecurityProtocol - unknown
 value '...'`), а не где-то в середине работы при первой попытке подключения.
 
+## Health checks
+
+Хост поднимает Kestrel (порт задаётся в `Kestrel:Endpoints:Http:Url`, по
+умолчанию `8080`; можно переопределить через `ASPNETCORE_URLS`) с двумя
+эндпоинтами:
+
+| Эндпоинт | Что проверяет | Код ответа |
+|---|---|---|
+| `GET /health/live` | Только то, что процесс жив и отвечает на HTTP. **Не** проверяет Oracle/Kafka — сбой внешней системы не повод убивать и перезапускать под, это не решит проблему, а вызовет рестарт-шторм. | всегда 200, если процесс жив |
+| `GET /health/ready` | Все проверки с тегом `ready`: подключение к Oracle, доступность Kafka-брокеров (через существующий продюсер), и по одной проверке на **каждое** зарегистрированное inbound/outbound событие. | 200 (`Healthy`) / 503 (`Degraded` или `Unhealthy`) |
+
+`/health/ready` отдаёт JSON с разбивкой по каждой проверке:
+
+```json
+{
+  "status": "Unhealthy",
+  "totalDurationMs": 12.4,
+  "checks": [
+    { "name": "oracle", "status": "Healthy", "description": "Oracle connection OK", "durationMs": 8.1 },
+    { "name": "kafka-producer", "status": "Healthy", "description": "Kafka reachable, 3 broker(s)", "durationMs": 3.2 },
+    { "name": "inbound:OrderCreated", "status": "Healthy", "description": "OrderCreated: OK", "durationMs": 0.0 },
+    { "name": "outbound:InvoiceReady", "status": "Unhealthy", "description": "InvoiceReady: Oracle connection failed", "durationMs": 0.1 }
+  ]
+}
+```
+
+Как считается здоровье конкретного события (`inbound:<Code>` / `outbound:<Code>`):
+
+- Каждый воркер (`InboundConsumerWorker`/`OutboundPollingWorker`) сам репортит
+  результат своей работы в общий `WorkerHealthState` — `ReportSuccess()` после
+  удачной обработки/poll-цикла, `ReportFailure(ex.Message)` при исключении.
+  Health check только читает это состояние, не делает никаких сетевых вызовов
+  сам.
+- **Inbound**: если consumer ни разу не упал — `Healthy`, независимо от того,
+  сколько времени не было сообщений (это легитимная ситуация, не "нездоровье").
+- **Outbound**: дополнительно проверяется staleness — poll-цикл должен успешно
+  отрабатывать (даже с 0 найденных строк) не реже, чем раз в
+  `max(3 × PollingIntervalSeconds, PollingIntervalSeconds + 30)` секунд, иначе
+  `Degraded`. Единичный сбой конкретной строки (Success/Error-процедура не
+  вызвалась) на здоровье воркера **не влияет** — это штатная ситуация at-least-once,
+  а не потеря соединения.
+
+Разработчику нового события никакого дополнительного кода для health checks
+писать не нужно — они регистрируются автоматически внутри
+`AddInboundEvents`/`AddOutboundEvents` на каждый `Code` из конфига.
+
+Пример проб в манифесте Kubernetes:
+
+```yaml
+livenessProbe:
+  httpGet: { path: /health/live, port: 8080 }
+  initialDelaySeconds: 10
+  periodSeconds: 15
+readinessProbe:
+  httpGet: { path: /health/ready, port: 8080 }
+  initialDelaySeconds: 5
+  periodSeconds: 10
+```
+
 ## Тесты
 
 `tests/MyApp.Tests` — юнит-тесты на xUnit + Moq. Покрывают:
@@ -139,6 +198,8 @@ value '...'`), а не где-то в середине работы при пе�
 - `KafkaSecurityConfigurator.ApplySecurity` — корректное применение SASL_SSL-
   настроек и на `ConsumerConfig`, и на `ProducerConfig`; fail-fast при неверном
   `SecurityProtocol`/`SaslMechanism`.
+- `WorkerHealthState` / `WorkerHealthEvaluator` — переходы Healthy ↔ Unhealthy,
+  приоритет явной ошибки над staleness, поведение с/без порога устаревания.
 
 Запуск:
 

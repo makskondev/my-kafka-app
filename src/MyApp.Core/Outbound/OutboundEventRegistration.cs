@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using MyApp.Contracts.Outbound;
 using MyApp.Core.Configuration;
+using MyApp.Core.Health;
 
 namespace MyApp.Core.Outbound;
 
@@ -94,8 +95,18 @@ public static class OutboundEventRegistrationExtensions
                 cfg.PollingIntervalSeconds);
             services.AddSingleton(registration);
 
+            var healthState = new WorkerHealthState();
+
             services.AddHostedService(sp =>
-                ActivatorUtilities.CreateInstance<OutboundPollingWorker>(sp, registration));
+                ActivatorUtilities.CreateInstance<OutboundPollingWorker>(sp, registration, healthState));
+
+            // staleAfter: poll-цикл должен успешно отрабатывать (даже с 0 найденных строк)
+            // не реже, чем раз в 3 интервала поллинга - иначе это уже не "тихо", а "застряло".
+            var staleAfter = TimeSpan.FromSeconds(Math.Max(cfg.PollingIntervalSeconds * 3, cfg.PollingIntervalSeconds + 30));
+            services.AddHealthChecks().AddAsyncCheck(
+                $"outbound:{cfg.Code}",
+                _ => Task.FromResult(WorkerHealthEvaluator.Evaluate(healthState, cfg.Code, staleAfter)),
+                tags: ["ready"]);
         }
 
         return services;

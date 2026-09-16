@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using Moq;
 using MyApp.Contracts.Inbound;
 using MyApp.Core.Configuration;
+using MyApp.Core.Health;
 using MyApp.Core.Inbound;
 using Xunit;
 
@@ -22,6 +23,7 @@ public class InboundConsumerWorkerTests
     private static InboundConsumerWorker CreateWorker(InboundEventRegistration registration, IServiceScopeFactory scopeFactory)
         => new(
             registration,
+            new WorkerHealthState(),
             scopeFactory,
             Options.Create(new KafkaOptions { BootstrapServers = "localhost:9092" }),
             Mock.Of<IKafkaConsumerFactory>(), // не используется напрямую при вызове ProcessMessageAsync

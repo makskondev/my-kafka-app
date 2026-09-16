@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MyApp.Contracts.Outbound;
+using MyApp.Core.Health;
 using MyApp.Data;
 
 namespace MyApp.Core.Outbound;
@@ -14,6 +15,7 @@ namespace MyApp.Core.Outbound;
 /// </summary>
 public sealed class OutboundPollingWorker(
     OutboundEventRegistration registration,
+    WorkerHealthState healthState,
     IServiceScopeFactory scopeFactory,
     IProducer<string, string> producer,
     IOracleProcedureInvoker procedureInvoker,
@@ -31,9 +33,13 @@ public sealed class OutboundPollingWorker(
             try
             {
                 await PollOnceAsync(stoppingToken);
+                // цикл поллинга сам по себе отработал (даже если items.Count == 0) -
+                // это и есть сигнал "воркер жив и может достучаться до Oracle/view".
+                healthState.ReportSuccess();
             }
             catch (Exception ex)
             {
+                healthState.ReportFailure(ex.Message);
                 logger.LogError(ex, "Outbound polling cycle failed. Code={Code}", registration.Code);
             }
         }
@@ -78,7 +84,9 @@ public sealed class OutboundPollingWorker(
         }
         catch (Exception ackEx)
         {
-            // строка останется во view и переобработается на следующем poll (at-least-once)
+            // строка останется во view и переобработается на следующем poll (at-least-once).
+            // Это НЕ считается сбоем самого цикла поллинга (см. ExecuteAsync) - единичная
+            // строка, а не потеря соединения с БД/Kafka.
             logger.LogError(ackEx, "Failed to call {Procedure}. Code={Code}, Key={Key}",
                 procedureName, registration.Code, item.IdempotencyKey);
         }

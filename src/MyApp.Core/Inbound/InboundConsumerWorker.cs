@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MyApp.Contracts.Inbound;
 using MyApp.Core.Configuration;
+using MyApp.Core.Health;
 using MyApp.Core.Kafka;
 
 namespace MyApp.Core.Inbound;
@@ -16,6 +17,7 @@ namespace MyApp.Core.Inbound;
 /// </summary>
 public sealed class InboundConsumerWorker(
     InboundEventRegistration registration,
+    WorkerHealthState healthState,
     IServiceScopeFactory scopeFactory,
     IOptions<KafkaOptions> kafkaOptions,
     IKafkaConsumerFactory consumerFactory,
@@ -55,6 +57,7 @@ public sealed class InboundConsumerWorker(
                 }
 
                 await ProcessMessageAsync(consumer, result, stoppingToken);
+                healthState.ReportSuccess();
             }
             catch (OperationCanceledException)
             {
@@ -62,6 +65,7 @@ public sealed class InboundConsumerWorker(
             }
             catch (Exception ex)
             {
+                healthState.ReportFailure(ex.Message);
                 logger.LogError(ex, "Inbound processing failed. Code={Code}, Offset={Offset}",
                     registration.Code, result?.TopicPartitionOffset);
 
@@ -84,7 +88,8 @@ public sealed class InboundConsumerWorker(
     /// <summary>
     /// Обработка одного сообщения: резолвит обработчик по Code, вызывает его и коммитит offset
     /// только при успехе. Исключение НЕ перехватывается здесь намеренно - его перехватывает
-    /// и логирует RunLoop, чтобы offset не закоммитился. Выделено в internal метод для юнит-тестов.
+    /// и логирует RunLoop (там же обновляется WorkerHealthState), чтобы offset не закоммитился.
+    /// Выделено в internal метод для юнит-тестов.
     /// </summary>
     internal async Task ProcessMessageAsync(
         IConsumer<string, string> consumer, ConsumeResult<string, string> result, CancellationToken ct)

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using MyApp.Contracts.Inbound;
 using MyApp.Core.Configuration;
+using MyApp.Core.Health;
 
 namespace MyApp.Core.Inbound;
 
@@ -65,8 +66,17 @@ public static class InboundEventRegistrationExtensions
             var registration = new InboundEventRegistration(cfg.Code, cfg.SourceQueue, cfg.ConsumerGroup);
             services.AddSingleton(registration);
 
+            var healthState = new WorkerHealthState();
+
             services.AddHostedService(sp =>
-                ActivatorUtilities.CreateInstance<InboundConsumerWorker>(sp, registration));
+                ActivatorUtilities.CreateInstance<InboundConsumerWorker>(sp, registration, healthState));
+
+            // staleAfter не задаём: у inbound-события легитимно может не быть сообщений часами -
+            // это не "нездоровье", учитывается только явная ошибка (см. WorkerHealthEvaluator).
+            services.AddHealthChecks().AddAsyncCheck(
+                $"inbound:{cfg.Code}",
+                _ => Task.FromResult(WorkerHealthEvaluator.Evaluate(healthState, cfg.Code, staleAfter: null)),
+                tags: ["ready"]);
         }
 
         return services;
